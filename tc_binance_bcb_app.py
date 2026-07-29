@@ -1,16 +1,7 @@
-import datetime
-import io
-import os
-import re
-from pathlib import Path
-
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import requests
 import streamlit as st
-from bs4 import BeautifulSoup
 from statsmodels.tsa.arima.model import ARIMA
 
 # ==========================================
@@ -43,9 +34,13 @@ st.markdown(
 # ==========================================
 @st.cache_data(ttl=3600)
 def cargar_datos_consolidados():
-    # Cargar Binance desde tipo_cambio_consolidado.xlsx
+    # 1. Cargar Binance desde tipo_cambio_consolidado.xlsx
     try:
         df_binance = pd.read_excel("tipo_cambio_consolidado.xlsx")
+        # Asegurar minúsculas y sin espacios incidentales
+        df_binance.columns = [
+            str(c).strip().lower() for c in df_binance.columns
+        ]
         df_binance["fecha"] = pd.to_datetime(df_binance["fecha"])
     except Exception as e:
         st.error(
@@ -55,17 +50,16 @@ def cargar_datos_consolidados():
             columns=["fecha", "binance_compra", "binance_venta"]
         )
 
-    # Cargar BCB desde tipo_cambio_consolidado1.xlsx
+    # 2. Cargar BCB desde tipo_cambio_consolidado1.xlsx
     try:
         df_bcb = pd.read_excel("tipo_cambio_consolidado1.xlsx")
+        df_bcb.columns = [str(c).strip().lower() for c in df_bcb.columns]
         df_bcb["fecha"] = pd.to_datetime(df_bcb["fecha"])
-        if "value" in df_bcb.columns and "bcb_oficial" not in df_bcb.columns:
-            df_bcb = df_bcb.rename(columns={"value": "bcb_oficial"})
     except Exception as e:
         st.error(f"Error al cargar tipo_cambio_consolidado1.xlsx (BCB): {e}")
         df_bcb = pd.DataFrame(columns=["fecha", "bcb_oficial"])
 
-    # Consolidar ambas series
+    # 3. Consolidar ambas series
     df_consolidado = pd.merge(df_binance, df_bcb, on="fecha", how="outer")
     df_consolidado = df_consolidado.sort_values("fecha").reset_index(
         drop=True
@@ -81,6 +75,24 @@ def cargar_datos_consolidados():
 # 3. ESTIMACIÓN Y PROYECCIÓN PROBABILÍSTICA
 # ==========================================
 def calcular_proyeccion(df_serie, col_target, dias_proyeccion=7):
+    if col_target not in df_serie.columns or df_serie[col_target].dropna().empty:
+        # Retornar DataFrame vacío en caso de que la columna no exista
+        fechas_futuras = pd.date_range(
+            start=pd.Timestamp.now(), periods=dias_proyeccion, freq="D"
+        )
+        df_empty_proj = pd.DataFrame(
+            {
+                "Día (h)": np.arange(1, dias_proyeccion + 1),
+                "Fecha": fechas_futuras,
+                "TC Esperado": np.zeros(dias_proyeccion),
+                "Min (95%)": np.zeros(dias_proyeccion),
+                "Max (95%)": np.zeros(dias_proyeccion),
+                "Min (99%)": np.zeros(dias_proyeccion),
+                "Max (99%)": np.zeros(dias_proyeccion),
+            }
+        )
+        return df_serie, df_empty_proj
+
     df_clean = df_serie.dropna(subset=[col_target]).copy()
     df_clean["log_ret"] = np.log(
         df_clean[col_target] / df_clean[col_target].shift(1)
@@ -96,9 +108,9 @@ def calcular_proyeccion(df_serie, col_target, dias_proyeccion=7):
     )
     h_steps = np.arange(1, dias_proyeccion + 1)
 
-    var_ret = np.var(df_model["log_ret"])
+    var_ret = np.var(df_model["log_ret"]) if not df_model.empty else 0
 
-    # Si la varianza es cero (caso tipo de cambio oficial fijo)
+    # Si la varianza es cero (como en la serie fija del BCB)
     if var_ret < 1e-8:
         trayectoria_central = np.full(dias_proyeccion, ultimo_precio)
         inf_95, sup_95 = trayectoria_central.copy(), trayectoria_central.copy()
@@ -179,18 +191,19 @@ brecha = (
 )
 
 # Cálculo de la pérdida del poder adquisitivo en los últimos 2 meses (60 días)
-df_bin_recent = df_data.dropna(subset=["binance_compra"]).copy()
-if len(df_bin_recent) >= 60:
-    tc_hace_2_meses = df_bin_recent["binance_compra"].iloc[-60]
-else:
-    tc_hace_2_meses = df_bin_recent["binance_compra"].iloc[0]
+perdida_poder_adquisitivo = 0.0
+if "binance_compra" in df_data and not df_data["binance_compra"].dropna().empty:
+    df_bin_recent = df_data.dropna(subset=["binance_compra"]).copy()
+    if len(df_bin_recent) >= 60:
+        tc_hace_2_meses = df_bin_recent["binance_compra"].iloc[-60]
+    else:
+        tc_hace_2_meses = df_bin_recent["binance_compra"].iloc[0]
 
-# Pérdida de Poder Adquisitivo = 1 - (TC_inicial / TC_final)
-perdida_poder_adquisitivo = (
-    (1 - (tc_hace_2_meses / latest_bin_compra)) * 100
-    if latest_bin_compra > 0
-    else 0
-)
+    # Pérdida de Poder Adquisitivo = 1 - (TC_inicial / TC_final)
+    if latest_bin_compra > 0:
+        perdida_poder_adquisitivo = (
+            1 - (tc_hace_2_meses / latest_bin_compra)
+        ) * 100
 
 # Despliegue de métricas
 col1, col2, col3, col4, col5 = st.columns(5)
@@ -212,22 +225,26 @@ st.subheader("📊 Cotización de los Últimos 2 Meses")
 df_2_meses = df_data.tail(60)
 
 fig_hist = go.Figure()
-fig_hist.add_trace(
-    go.Scatter(
-        x=df_2_meses["fecha"],
-        y=df_2_meses["binance_compra"],
-        name="Binance Compra P2P",
-        line=dict(color="#d62728", width=2.5),
+
+if "binance_compra" in df_2_meses.columns:
+    fig_hist.add_trace(
+        go.Scatter(
+            x=df_2_meses["fecha"],
+            y=df_2_meses["binance_compra"],
+            name="Binance Compra P2P",
+            line=dict(color="#d62728", width=2.5),
+        )
     )
-)
-fig_hist.add_trace(
-    go.Scatter(
-        x=df_2_meses["bcb_oficial"],
-        y=df_2_meses["bcb_oficial"],
-        name="BCB Oficial",
-        line=dict(color="#1f77b4", width=2, dash="dash"),
+
+if "bcb_oficial" in df_2_meses.columns:
+    fig_hist.add_trace(
+        go.Scatter(
+            x=df_2_meses["fecha"],
+            y=df_2_meses["bcb_oficial"],
+            name="BCB Oficial",
+            line=dict(color="#1f77b4", width=2, dash="dash"),
+        )
     )
-)
 
 fig_hist.update_layout(
     template="plotly_white",
@@ -259,17 +276,18 @@ df_clean, df_proj = calcular_proyeccion(df_data, col_target)
 col_chart, col_table = st.columns([3, 2])
 
 with col_chart:
-    df_zoom = df_clean.tail(30)
+    df_zoom = df_clean.tail(30) if "fecha" in df_clean.columns else df_clean
     fig_proj = go.Figure()
 
-    fig_proj.add_trace(
-        go.Scatter(
-            x=df_zoom["fecha"],
-            y=df_zoom[col_target],
-            name="Histórico Reciente",
-            line=dict(color="#111111", width=2),
+    if col_target in df_zoom.columns:
+        fig_proj.add_trace(
+            go.Scatter(
+                x=df_zoom["fecha"],
+                y=df_zoom[col_target],
+                name="Histórico Reciente",
+                line=dict(color="#111111", width=2),
+            )
         )
-    )
     fig_proj.add_trace(
         go.Scatter(
             x=list(df_proj["Fecha"]) + list(df_proj["Fecha"])[::-1],
