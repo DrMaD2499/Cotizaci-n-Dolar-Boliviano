@@ -5,7 +5,7 @@ import streamlit as st
 from statsmodels.tsa.arima.model import ARIMA
 
 # ==========================================
-# 1. CONFIGURACIÓN DE PÁGINA (FONDO BLANCO)
+# 1. CONFIGURACIÓN DE PÁGINA
 # ==========================================
 st.set_page_config(
     page_title="Monitor Cambiario & Análisis Económico",
@@ -14,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Estilo global para forzar fondo blanco y texto oscuro
+# Estilo global para fondo blanco
 st.markdown(
     """
     <style>
@@ -29,16 +29,14 @@ st.markdown(
 )
 
 
-# Función auxiliar para convertir valores de Excel a float limpio
 def limpiar_columna_numerica(s):
     if s.dtype == "object":
-        # Reemplazar comas por puntos y eliminar caracteres no numéricos
         s = s.astype(str).str.replace(",", ".").str.extract(r"(\d+\.?\d*)")[0]
     return pd.to_numeric(s, errors="coerce")
 
 
 # ==========================================
-# 2. CARGA DE DATOS DESDE EXCEL LOCALES (ROBUSTA)
+# 2. CARGA DE DATOS DESDE EXCEL LOCALES
 # ==========================================
 @st.cache_data(ttl=3600)
 def cargar_datos_consolidados():
@@ -49,12 +47,10 @@ def cargar_datos_consolidados():
             str(c).strip().lower() for c in df_binance.columns
         ]
 
-        # Normalizar fecha
         df_binance["fecha"] = pd.to_datetime(
             df_binance["fecha"], errors="coerce"
         ).dt.normalize()
 
-        # Limpiar columnas numéricas
         if "binance_compra" in df_binance.columns:
             df_binance["binance_compra"] = limpiar_columna_numerica(
                 df_binance["binance_compra"]
@@ -92,13 +88,13 @@ def cargar_datos_consolidados():
         st.error(f"Error al cargar tipo_cambio_consolidado1.xlsx (BCB): {e}")
         df_bcb = pd.DataFrame(columns=["fecha", "bcb_oficial"])
 
-    # 3. Consolidar ambas series
+    # 3. Consolidar ambas series mediante Outer Join
     df_consolidado = pd.merge(df_binance, df_bcb, on="fecha", how="outer")
     df_consolidado = df_consolidado.sort_values("fecha").reset_index(
         drop=True
     )
 
-    # Rellenar valores vacíos para dar continuidad a las series
+    # Rellenar valores para mantener continuidad
     if "bcb_oficial" in df_consolidado.columns:
         df_consolidado["bcb_oficial"] = (
             df_consolidado["bcb_oficial"].ffill().bfill()
@@ -212,28 +208,33 @@ st.caption(
 with st.spinner("Cargando datos..."):
     df_data = cargar_datos_consolidados()
 
-# Muestra opcional de diagnóstico para ver si lee los datos (puedes quitarlo si lo deseas)
-if df_data.empty or df_data["binance_compra"].dropna().empty:
+# --- VERIFICACIÓN SEGURA DE DATOS ---
+has_binance_compra = (
+    "binance_compra" in df_data.columns
+    and not df_data["binance_compra"].dropna().empty
+)
+has_binance_venta = (
+    "binance_venta" in df_data.columns
+    and not df_data["binance_venta"].dropna().empty
+)
+has_bcb = (
+    "bcb_oficial" in df_data.columns
+    and not df_data["bcb_oficial"].dropna().empty
+)
+
+if not has_binance_compra:
     st.warning(
-        "⚠️ No se pudieron leer datos numéricos. Verifica que las fechas y los nombres de las columnas en los archivos .xlsx sean 'fecha', 'binance_compra', 'binance_venta' y 'bcb_oficial'."
+        "⚠️ No se pudieron obtener datos válidos para Binance Compra. Revisa tipo_cambio_consolidado.xlsx"
     )
 
-# --- CÁLCULO DE INDICADORES PRINCIPALES ---
+# --- CÁLCULO DE INDICADORS PRINCIPALES ---
 latest_bin_compra = (
-    df_data["binance_compra"].dropna().iloc[-1]
-    if "binance_compra" in df_data and not df_data["binance_compra"].dropna().empty
-    else 0.0
+    df_data["binance_compra"].dropna().iloc[-1] if has_binance_compra else 0.0
 )
 latest_bin_venta = (
-    df_data["binance_venta"].dropna().iloc[-1]
-    if "binance_venta" in df_data and not df_data["binance_venta"].dropna().empty
-    else 0.0
+    df_data["binance_venta"].dropna().iloc[-1] if has_binance_venta else 0.0
 )
-latest_bcb = (
-    df_data["bcb_oficial"].dropna().iloc[-1]
-    if "bcb_oficial" in df_data and not df_data["bcb_oficial"].dropna().empty
-    else 6.96
-)
+latest_bcb = df_data["bcb_oficial"].dropna().iloc[-1] if has_bcb else 6.96
 
 brecha = (
     ((latest_bin_compra - latest_bcb) / latest_bcb) * 100
@@ -243,7 +244,7 @@ brecha = (
 
 # Pérdida de poder adquisitivo (60 días)
 perdida_poder_adquisitivo = 0.0
-if "binance_compra" in df_data and not df_data["binance_compra"].dropna().empty:
+if has_binance_compra:
     df_bin_recent = df_data.dropna(subset=["binance_compra"]).copy()
     if len(df_bin_recent) >= 60:
         tc_hace_2_meses = df_bin_recent["binance_compra"].iloc[-60]
@@ -276,7 +277,7 @@ df_2_meses = df_data.tail(60)
 
 fig_hist = go.Figure()
 
-if "binance_compra" in df_2_meses.columns:
+if has_binance_compra:
     fig_hist.add_trace(
         go.Scatter(
             x=df_2_meses["fecha"],
@@ -286,7 +287,7 @@ if "binance_compra" in df_2_meses.columns:
         )
     )
 
-if "bcb_oficial" in df_2_meses.columns:
+if has_bcb:
     fig_hist.add_trace(
         go.Scatter(
             x=df_2_meses["fecha"],
@@ -329,7 +330,7 @@ with col_chart:
     df_zoom = df_clean.tail(30) if "fecha" in df_clean.columns else df_clean
     fig_proj = go.Figure()
 
-    if col_target in df_zoom.columns:
+    if col_target in df_zoom.columns and not df_zoom[col_target].dropna().empty:
         fig_proj.add_trace(
             go.Scatter(
                 x=df_zoom["fecha"],
