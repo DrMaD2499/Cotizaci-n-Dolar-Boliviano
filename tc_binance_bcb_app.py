@@ -7,25 +7,60 @@ from statsmodels.tsa.arima.model import ARIMA
 # ==========================================
 # 1. CONFIGURACIÓN DE PÁGINA
 # ==========================================
-st.set_page_config(
-    page_title="Monitor Cambiario & Análisis Económico",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.markdown("""
+<style>
+.metric-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 1rem;
+}
+.metric-card {
+    background: #f8f8f8;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 14px 16px;
+}
+.metric-card.full { grid-column: 1 / -1; }
+.metric-label {
+    font-size: 12px;
+    color: #555;
+    margin-bottom: 6px;
+}
+.metric-value {
+    font-size: 22px;
+    font-weight: 600;
+    color: #111;
+}
+.metric-value.danger { color: #c0392b; }
+.metric-value.warn   { color: #e67e22; }
+</style>
+""", unsafe_allow_html=True)
 
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background-color: #FFFFFF;
-        color: #111111;
-    }
-    header {visibility: hidden;}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown(f"""
+<div class="metric-grid">
+  <div class="metric-card">
+    <div class="metric-label">Binance Compra</div>
+    <div class="metric-value">{latest_bin_compra:.2f} <span style="font-size:14px;color:#888">BOB</span></div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">Binance Venta</div>
+    <div class="metric-value">{latest_bin_venta:.2f} <span style="font-size:14px;color:#888">BOB</span></div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">BCB Oficial</div>
+    <div class="metric-value">{latest_bcb:.2f} <span style="font-size:14px;color:#888">BOB</span></div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">Brecha de mercado</div>
+    <div class="metric-value warn">{brecha:.1f}%</div>
+  </div>
+  <div class="metric-card full">
+    <div class="metric-label">Pérdida poder adquisitivo (2 meses)</div>
+    <div class="metric-value danger">−{perdida_poder_adquisitivo:.1f}%</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
 
 # ==========================================
