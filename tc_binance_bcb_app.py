@@ -14,7 +14,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Estilo global para fondo blanco
 st.markdown(
     """
     <style>
@@ -29,90 +28,74 @@ st.markdown(
 )
 
 
-def limpiar_columna_numerica(s):
-    if s.dtype == "object":
-        s = s.astype(str).str.replace(",", ".").str.extract(r"(\d+\.?\d*)")[0]
-    return pd.to_numeric(s, errors="coerce")
-
-
 # ==========================================
-# 2. CARGA DE DATOS DESDE EXCEL LOCALES
+# 2. CARGA Y PREPARACIÓN DE DATOS
 # ==========================================
 @st.cache_data(ttl=3600)
 def cargar_datos_consolidados():
-    # 1. Cargar Binance desde tipo_cambio_consolidado.xlsx
-    try:
-        df_binance = pd.read_excel("tipo_cambio_consolidado.xlsx")
-        df_binance.columns = [
-            str(c).strip().lower() for c in df_binance.columns
-        ]
+    # Intenta cargar desde tipo_cambio_consolidado1.xlsx o tipo_cambio_consolidado.xlsx
+    df_final = None
 
-        df_binance["fecha"] = pd.to_datetime(
-            df_binance["fecha"], errors="coerce"
-        ).dt.normalize()
+    for fname in ["tipo_cambio_consolidado1.xlsx", "tipo_cambio_consolidado.xlsx"]:
+        try:
+            df = pd.read_excel(fname)
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            if "fecha" in df.columns:
+                df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
+                df = df.dropna(subset=["fecha"])
 
-        if "binance_compra" in df_binance.columns:
-            df_binance["binance_compra"] = limpiar_columna_numerica(
-                df_binance["binance_compra"]
-            )
-        if "binance_venta" in df_binance.columns:
-            df_binance["binance_venta"] = limpiar_columna_numerica(
-                df_binance["binance_venta"]
-            )
+                # Normalizar numéricos
+                for col in ["binance_compra", "binance_venta", "bcb_oficial"]:
+                    if col in df.columns:
+                        if df[col].dtype == "object":
+                            df[col] = (
+                                df[col]
+                                .astype(str)
+                                .str.replace(",", ".")
+                                .str.extract(r"(\d+\.?\d*)")[0]
+                            )
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        df_binance = df_binance.dropna(subset=["fecha"])
-    except Exception as e:
-        st.error(
-            f"Error al cargar tipo_cambio_consolidado.xlsx (Binance): {e}"
+                if df_final is None:
+                    df_final = df
+                else:
+                    df_final = pd.merge(
+                        df_final, df, on="fecha", how="outer", suffixes=("", "_y")
+                    )
+                    # Combinar columnas duplicadas tras el merge
+                    for col in ["binance_compra", "binance_venta", "bcb_oficial"]:
+                        if (
+                            f"{col}_y" in df_final.columns
+                            and col in df_final.columns
+                        ):
+                            df_final[col] = df_final[col].fillna(
+                                df_final[f"{col}_y"]
+                            )
+                            df_final = df_final.drop(columns=[f"{col}_y"])
+        except Exception:
+            continue
+
+    if df_final is None or df_final.empty:
+        # DataFrame de resguardo si no existen los archivos
+        return pd.DataFrame(
+            columns=["fecha", "binance_compra", "binance_venta", "bcb_oficial"]
         )
-        df_binance = pd.DataFrame(
-            columns=["fecha", "binance_compra", "binance_venta"]
-        )
 
-    # 2. Cargar BCB desde tipo_cambio_consolidado1.xlsx
-    try:
-        df_bcb = pd.read_excel("tipo_cambio_consolidado1.xlsx")
-        df_bcb.columns = [str(c).strip().lower() for c in df_bcb.columns]
+    df_final = df_final.sort_values("fecha").reset_index(drop=True)
 
-        df_bcb["fecha"] = pd.to_datetime(
-            df_bcb["fecha"], errors="coerce"
-        ).dt.normalize()
+    # Rellenar valores nulos manteniendo la serie
+    if "bcb_oficial" in df_final.columns:
+        df_final["bcb_oficial"] = df_final["bcb_oficial"].ffill().bfill()
+    if "binance_compra" in df_final.columns:
+        df_final["binance_compra"] = df_final["binance_compra"].ffill()
+    if "binance_venta" in df_final.columns:
+        df_final["binance_venta"] = df_final["binance_venta"].ffill()
 
-        if "bcb_oficial" in df_bcb.columns:
-            df_bcb["bcb_oficial"] = limpiar_columna_numerica(
-                df_bcb["bcb_oficial"]
-            )
-
-        df_bcb = df_bcb.dropna(subset=["fecha"])
-    except Exception as e:
-        st.error(f"Error al cargar tipo_cambio_consolidado1.xlsx (BCB): {e}")
-        df_bcb = pd.DataFrame(columns=["fecha", "bcb_oficial"])
-
-    # 3. Consolidar ambas series mediante Outer Join
-    df_consolidado = pd.merge(df_binance, df_bcb, on="fecha", how="outer")
-    df_consolidado = df_consolidado.sort_values("fecha").reset_index(
-        drop=True
-    )
-
-    # Rellenar valores para mantener continuidad
-    if "bcb_oficial" in df_consolidado.columns:
-        df_consolidado["bcb_oficial"] = (
-            df_consolidado["bcb_oficial"].ffill().bfill()
-        )
-    if "binance_compra" in df_consolidado.columns:
-        df_consolidado["binance_compra"] = df_consolidado[
-            "binance_compra"
-        ].ffill()
-    if "binance_venta" in df_consolidado.columns:
-        df_consolidado["binance_venta"] = df_consolidado[
-            "binance_venta"
-        ].ffill()
-
-    return df_consolidado
+    return df_final
 
 
 # ==========================================
-# 3. ESTIMACIÓN Y PROYECCIÓN PROBABILÍSTICA
+# 3. ESTIMACIÓN Y PROYECCIÓN PROBABILÍSTICA (ARIMA)
 # ==========================================
 def calcular_proyeccion(df_serie, col_target, dias_proyeccion=7):
     if (
@@ -208,7 +191,7 @@ st.caption(
 with st.spinner("Cargando datos..."):
     df_data = cargar_datos_consolidados()
 
-# --- VERIFICACIÓN SEGURA DE DATOS ---
+# Verificaciones
 has_binance_compra = (
     "binance_compra" in df_data.columns
     and not df_data["binance_compra"].dropna().empty
@@ -224,10 +207,10 @@ has_bcb = (
 
 if not has_binance_compra:
     st.warning(
-        "⚠️ No se pudieron obtener datos válidos para Binance Compra. Revisa tipo_cambio_consolidado.xlsx"
+        "⚠️ No se encontró la columna 'binance_compra' con datos válidos en los archivos Excel."
     )
 
-# --- CÁLCULO DE INDICADORS PRINCIPALES ---
+# --- CÁLCULO DE INDICADORES PRINCIPALES ---
 latest_bin_compra = (
     df_data["binance_compra"].dropna().iloc[-1] if has_binance_compra else 0.0
 )
