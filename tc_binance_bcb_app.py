@@ -5,7 +5,7 @@ import streamlit as st
 from statsmodels.tsa.arima.model import ARIMA
 
 # ==========================================
-# 1. CONFIGURACIÓN DE PÁGINA Y CSS RESPONSIVO
+# 1. CONFIGURACIÓN DE PÁGINA Y CSS CORREGIDO
 # ==========================================
 st.set_page_config(
     page_title="Monitor Cambiario & Análisis Económico",
@@ -24,14 +24,36 @@ st.markdown(
     }
     header {visibility: hidden;}
 
-    /* Ajustar métricas en pantallas pequeñas */
-    [data-testid="stMetricValue"] {
-        font-size: calc(1.1rem + 0.6vw) !important;
-        word-break: break-word;
+    /* FORZAR COLOR NEGRO Y TAMAÑO EN LOS NÚMEROS Y LABELS DE MÉTRICAS (SOLUCIÓN MÓVIL) */
+    div[data-testid="stMetricValue"] {
+        color: #111111 !important;
+        font-weight: 700 !important;
+        font-size: calc(1.0rem + 0.5vw) !important;
+        word-break: normal !important;
     }
-    [data-testid="stMetricLabel"] {
-        font-size: 0.85rem !important;
+    div[data-testid="stMetricValue"] * {
+        color: #111111 !important;
+    }
+    div[data-testid="stMetricLabel"] {
+        color: #444444 !important;
+        font-weight: 600 !important;
+        font-size: 0.8rem !important;
         white-space: normal !important;
+    }
+    div[data-testid="stMetricDelta"] {
+        font-size: 0.8rem !important;
+    }
+
+    /* Permitir scroll horizontal en móviles si 5 columnas no caben completas */
+    @media (max-width: 768px) {
+        div[data-testid="stHorizontalBlock"] {
+            overflow-x: auto;
+            flex-wrap: nowrap !important;
+        }
+        div[data-testid="column"] {
+            min-width: 110px !important;
+            flex: 1 0 auto !important;
+        }
     }
 
     /* Estilo forzado para formulario de contacto en móvil/modo oscuro */
@@ -254,17 +276,13 @@ if has_binance_compra:
             1 - (tc_hace_2_meses / latest_bin_compra)
         ) * 100
 
-# --- MÉTRICAS EN DOS FILAS PARA EVITAR COMPRESIÓN EN MÓVIL ---
-# Fila 1: Cotizaciones principales (3 columnas)
-m1, m2, m3 = st.columns(3)
-m1.metric("Binance Compra", f"{latest_bin_compra:.2f} BOB")
-m2.metric("Binance Venta", f"{latest_bin_venta:.2f} BOB")
-m3.metric("BCB Oficial", f"{latest_bcb:.2f} BOB")
-
-# Fila 2: Indicadores derivados (2 columnas)
-m4, m5 = st.columns(2)
-m4.metric("Brecha Mercado", f"{brecha:.1f}%")
-m5.metric(
+# --- 5 MÉTRICAS EN 1 SOLA LÍNEA ---
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("Binance Compra", f"{latest_bin_compra:.2f} BOB")
+col2.metric("Binance Venta", f"{latest_bin_venta:.2f} BOB")
+col3.metric("BCB Oficial", f"{latest_bcb:.2f} BOB")
+col4.metric("Brecha Mercado", f"{brecha:.1f}%")
+col5.metric(
     "Pérdida Poder Adq. (2m)",
     f"-{perdida_poder_adquisitivo:.1f}%",
     delta_color="inverse",
@@ -327,7 +345,6 @@ col_target = (
 
 df_clean, df_proj = calcular_proyeccion(df_data, col_target)
 
-# En pantalla completa va en 2 columnas, en móvil se apilará adecuadamente
 col_chart, col_table = st.columns([3, 2])
 
 with col_chart:
