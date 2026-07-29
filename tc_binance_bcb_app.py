@@ -29,19 +29,42 @@ st.markdown(
 )
 
 
+# Función auxiliar para convertir valores de Excel a float limpio
+def limpiar_columna_numerica(s):
+    if s.dtype == "object":
+        # Reemplazar comas por puntos y eliminar caracteres no numéricos
+        s = s.astype(str).str.replace(",", ".").str.extract(r"(\d+\.?\d*)")[0]
+    return pd.to_numeric(s, errors="coerce")
+
+
 # ==========================================
-# 2. CARGA DE DATOS DESDE EXCEL LOCALES
+# 2. CARGA DE DATOS DESDE EXCEL LOCALES (ROBUSTA)
 # ==========================================
 @st.cache_data(ttl=3600)
 def cargar_datos_consolidados():
     # 1. Cargar Binance desde tipo_cambio_consolidado.xlsx
     try:
         df_binance = pd.read_excel("tipo_cambio_consolidado.xlsx")
-        # Asegurar minúsculas y sin espacios incidentales
         df_binance.columns = [
             str(c).strip().lower() for c in df_binance.columns
         ]
-        df_binance["fecha"] = pd.to_datetime(df_binance["fecha"])
+
+        # Normalizar fecha
+        df_binance["fecha"] = pd.to_datetime(
+            df_binance["fecha"], errors="coerce"
+        ).dt.normalize()
+
+        # Limpiar columnas numéricas
+        if "binance_compra" in df_binance.columns:
+            df_binance["binance_compra"] = limpiar_columna_numerica(
+                df_binance["binance_compra"]
+            )
+        if "binance_venta" in df_binance.columns:
+            df_binance["binance_venta"] = limpiar_columna_numerica(
+                df_binance["binance_venta"]
+            )
+
+        df_binance = df_binance.dropna(subset=["fecha"])
     except Exception as e:
         st.error(
             f"Error al cargar tipo_cambio_consolidado.xlsx (Binance): {e}"
@@ -54,7 +77,17 @@ def cargar_datos_consolidados():
     try:
         df_bcb = pd.read_excel("tipo_cambio_consolidado1.xlsx")
         df_bcb.columns = [str(c).strip().lower() for c in df_bcb.columns]
-        df_bcb["fecha"] = pd.to_datetime(df_bcb["fecha"])
+
+        df_bcb["fecha"] = pd.to_datetime(
+            df_bcb["fecha"], errors="coerce"
+        ).dt.normalize()
+
+        if "bcb_oficial" in df_bcb.columns:
+            df_bcb["bcb_oficial"] = limpiar_columna_numerica(
+                df_bcb["bcb_oficial"]
+            )
+
+        df_bcb = df_bcb.dropna(subset=["fecha"])
     except Exception as e:
         st.error(f"Error al cargar tipo_cambio_consolidado1.xlsx (BCB): {e}")
         df_bcb = pd.DataFrame(columns=["fecha", "bcb_oficial"])
@@ -65,8 +98,19 @@ def cargar_datos_consolidados():
         drop=True
     )
 
+    # Rellenar valores vacíos para dar continuidad a las series
     if "bcb_oficial" in df_consolidado.columns:
-        df_consolidado["bcb_oficial"] = df_consolidado["bcb_oficial"].ffill()
+        df_consolidado["bcb_oficial"] = (
+            df_consolidado["bcb_oficial"].ffill().bfill()
+        )
+    if "binance_compra" in df_consolidado.columns:
+        df_consolidado["binance_compra"] = df_consolidado[
+            "binance_compra"
+        ].ffill()
+    if "binance_venta" in df_consolidado.columns:
+        df_consolidado["binance_venta"] = df_consolidado[
+            "binance_venta"
+        ].ffill()
 
     return df_consolidado
 
@@ -75,8 +119,10 @@ def cargar_datos_consolidados():
 # 3. ESTIMACIÓN Y PROYECCIÓN PROBABILÍSTICA
 # ==========================================
 def calcular_proyeccion(df_serie, col_target, dias_proyeccion=7):
-    if col_target not in df_serie.columns or df_serie[col_target].dropna().empty:
-        # Retornar DataFrame vacío en caso de que la columna no exista
+    if (
+        col_target not in df_serie.columns
+        or df_serie[col_target].dropna().empty
+    ):
         fechas_futuras = pd.date_range(
             start=pd.Timestamp.now(), periods=dias_proyeccion, freq="D"
         )
@@ -110,7 +156,6 @@ def calcular_proyeccion(df_serie, col_target, dias_proyeccion=7):
 
     var_ret = np.var(df_model["log_ret"]) if not df_model.empty else 0
 
-    # Si la varianza es cero (como en la serie fija del BCB)
     if var_ret < 1e-8:
         trayectoria_central = np.full(dias_proyeccion, ultimo_precio)
         inf_95, sup_95 = trayectoria_central.copy(), trayectoria_central.copy()
@@ -167,16 +212,22 @@ st.caption(
 with st.spinner("Cargando datos..."):
     df_data = cargar_datos_consolidados()
 
+# Muestra opcional de diagnóstico para ver si lee los datos (puedes quitarlo si lo deseas)
+if df_data.empty or df_data["binance_compra"].dropna().empty:
+    st.warning(
+        "⚠️ No se pudieron leer datos numéricos. Verifica que las fechas y los nombres de las columnas en los archivos .xlsx sean 'fecha', 'binance_compra', 'binance_venta' y 'bcb_oficial'."
+    )
+
 # --- CÁLCULO DE INDICADORES PRINCIPALES ---
 latest_bin_compra = (
     df_data["binance_compra"].dropna().iloc[-1]
     if "binance_compra" in df_data and not df_data["binance_compra"].dropna().empty
-    else 0
+    else 0.0
 )
 latest_bin_venta = (
     df_data["binance_venta"].dropna().iloc[-1]
     if "binance_venta" in df_data and not df_data["binance_venta"].dropna().empty
-    else 0
+    else 0.0
 )
 latest_bcb = (
     df_data["bcb_oficial"].dropna().iloc[-1]
@@ -187,10 +238,10 @@ latest_bcb = (
 brecha = (
     ((latest_bin_compra - latest_bcb) / latest_bcb) * 100
     if latest_bcb > 0
-    else 0
+    else 0.0
 )
 
-# Cálculo de la pérdida del poder adquisitivo en los últimos 2 meses (60 días)
+# Pérdida de poder adquisitivo (60 días)
 perdida_poder_adquisitivo = 0.0
 if "binance_compra" in df_data and not df_data["binance_compra"].dropna().empty:
     df_bin_recent = df_data.dropna(subset=["binance_compra"]).copy()
@@ -199,7 +250,6 @@ if "binance_compra" in df_data and not df_data["binance_compra"].dropna().empty:
     else:
         tc_hace_2_meses = df_bin_recent["binance_compra"].iloc[0]
 
-    # Pérdida de Poder Adquisitivo = 1 - (TC_inicial / TC_final)
     if latest_bin_compra > 0:
         perdida_poder_adquisitivo = (
             1 - (tc_hace_2_meses / latest_bin_compra)
