@@ -5,7 +5,7 @@ import streamlit as st
 from statsmodels.tsa.arima.model import ARIMA
 
 # ==========================================
-# 1. CONFIGURACIÓN DE PÁGINA Y CSS CORREGIDO
+# 1. CONFIGURACIÓN DE PÁGINA
 # ==========================================
 st.set_page_config(
     page_title="Monitor Cambiario & Análisis Económico",
@@ -17,60 +17,11 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Forzar fondo blanco general y texto oscuro */
     .stApp {
-        background-color: #FFFFFF !important;
-        color: #111111 !important;
+        background-color: #FFFFFF;
+        color: #111111;
     }
     header {visibility: hidden;}
-
-    /* FORZAR COLOR NEGRO Y TAMAÑO EN LOS NÚMEROS Y LABELS DE MÉTRICAS (SOLUCIÓN MÓVIL) */
-    div[data-testid="stMetricValue"] {
-        color: #111111 !important;
-        font-weight: 700 !important;
-        font-size: calc(1.0rem + 0.5vw) !important;
-        word-break: normal !important;
-    }
-    div[data-testid="stMetricValue"] * {
-        color: #111111 !important;
-    }
-    div[data-testid="stMetricLabel"] {
-        color: #444444 !important;
-        font-weight: 600 !important;
-        font-size: 0.8rem !important;
-        white-space: normal !important;
-    }
-    div[data-testid="stMetricDelta"] {
-        font-size: 0.8rem !important;
-    }
-
-    /* Permitir scroll horizontal en móviles si 5 columnas no caben completas */
-    @media (max-width: 768px) {
-        div[data-testid="stHorizontalBlock"] {
-            overflow-x: auto;
-            flex-wrap: nowrap !important;
-        }
-        div[data-testid="column"] {
-            min-width: 110px !important;
-            flex: 1 0 auto !important;
-        }
-    }
-
-    /* Estilo forzado para formulario de contacto en móvil/modo oscuro */
-    div[data-testid="stForm"] {
-        background-color: #F9F9F9 !important;
-        border: 1px solid #E0E0E0 !important;
-        border-radius: 10px !important;
-        padding: 1.5rem !important;
-    }
-    div[data-testid="stForm"] label, div[data-testid="stForm"] p {
-        color: #111111 !important;
-    }
-    div[data-testid="stForm"] input, div[data-testid="stForm"] textarea {
-        background-color: #FFFFFF !important;
-        color: #111111 !important;
-        border: 1px solid #CCCCCC !important;
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -82,6 +33,7 @@ st.markdown(
 # ==========================================
 @st.cache_data(ttl=3600)
 def cargar_datos_consolidados():
+    # Intenta cargar desde tipo_cambio_consolidado1.xlsx o tipo_cambio_consolidado.xlsx
     df_final = None
 
     for fname in ["tipo_cambio_consolidado1.xlsx", "tipo_cambio_consolidado.xlsx"]:
@@ -92,6 +44,7 @@ def cargar_datos_consolidados():
                 df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
                 df = df.dropna(subset=["fecha"])
 
+                # Normalizar numéricos
                 for col in ["binance_compra", "binance_venta", "bcb_oficial"]:
                     if col in df.columns:
                         if df[col].dtype == "object":
@@ -109,6 +62,7 @@ def cargar_datos_consolidados():
                     df_final = pd.merge(
                         df_final, df, on="fecha", how="outer", suffixes=("", "_y")
                     )
+                    # Combinar columnas duplicadas tras el merge
                     for col in ["binance_compra", "binance_venta", "bcb_oficial"]:
                         if (
                             f"{col}_y" in df_final.columns
@@ -122,12 +76,14 @@ def cargar_datos_consolidados():
             continue
 
     if df_final is None or df_final.empty:
+        # DataFrame de resguardo si no existen los archivos
         return pd.DataFrame(
             columns=["fecha", "binance_compra", "binance_venta", "bcb_oficial"]
         )
 
     df_final = df_final.sort_values("fecha").reset_index(drop=True)
 
+    # Rellenar valores nulos manteniendo la serie
     if "bcb_oficial" in df_final.columns:
         df_final["bcb_oficial"] = df_final["bcb_oficial"].ffill().bfill()
     if "binance_compra" in df_final.columns:
@@ -139,7 +95,7 @@ def cargar_datos_consolidados():
 
 
 # ==========================================
-# 3. ESTIMACIÓN Y PROYECCIÓN (ARIMA)
+# 3. ESTIMACIÓN Y PROYECCIÓN PROBABILÍSTICA (ARIMA)
 # ==========================================
 def calcular_proyeccion(df_serie, col_target, dias_proyeccion=7):
     if (
@@ -235,6 +191,7 @@ st.caption(
 with st.spinner("Cargando datos..."):
     df_data = cargar_datos_consolidados()
 
+# Verificaciones
 has_binance_compra = (
     "binance_compra" in df_data.columns
     and not df_data["binance_compra"].dropna().empty
@@ -248,7 +205,12 @@ has_bcb = (
     and not df_data["bcb_oficial"].dropna().empty
 )
 
-# Métricas principales
+if not has_binance_compra:
+    st.warning(
+        "⚠️ No se encontró la columna 'binance_compra' con datos válidos en los archivos Excel."
+    )
+
+# --- CÁLCULO DE INDICADORES PRINCIPALES ---
 latest_bin_compra = (
     df_data["binance_compra"].dropna().iloc[-1] if has_binance_compra else 0.0
 )
@@ -263,6 +225,7 @@ brecha = (
     else 0.0
 )
 
+# Pérdida de poder adquisitivo (60 días)
 perdida_poder_adquisitivo = 0.0
 if has_binance_compra:
     df_bin_recent = df_data.dropna(subset=["binance_compra"]).copy()
@@ -276,21 +239,21 @@ if has_binance_compra:
             1 - (tc_hace_2_meses / latest_bin_compra)
         ) * 100
 
-# --- 5 MÉTRICAS EN 1 SOLA LÍNEA ---
+# Despliegue de métricas
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Binance Compra", f"{latest_bin_compra:.2f} BOB")
 col2.metric("Binance Venta", f"{latest_bin_venta:.2f} BOB")
 col3.metric("BCB Oficial", f"{latest_bcb:.2f} BOB")
 col4.metric("Brecha Mercado", f"{brecha:.1f}%")
 col5.metric(
-    "Pérdida Poder Adq. (2m)",
+    "Pérdida Poder Adquisitivo (2m)",
     f"-{perdida_poder_adquisitivo:.1f}%",
     delta_color="inverse",
 )
 
 st.markdown("---")
 
-# --- SERIE HISTÓRICA ---
+# --- SERIE HISTÓRICA (ÚLTIMOS 2 MESES - 60 DÍAS) ---
 st.subheader("📊 Cotización de los Últimos 2 Meses")
 
 df_2_meses = df_data.tail(60)
@@ -322,11 +285,10 @@ fig_hist.update_layout(
     paper_bgcolor="white",
     plot_bgcolor="white",
     hovermode="x unified",
-    height=350,
-    margin=dict(l=10, r=10, t=20, b=20),
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    height=380,
     xaxis=dict(title="Fecha", showgrid=True, gridcolor="#E5E5E5"),
     yaxis=dict(title="BOB / USD", showgrid=True, gridcolor="#E5E5E5"),
+    margin=dict(l=20, r=20, t=30, b=20),
 )
 st.plotly_chart(fig_hist, use_container_width=True)
 
@@ -395,15 +357,14 @@ with col_chart:
         template="plotly_white",
         paper_bgcolor="white",
         plot_bgcolor="white",
-        height=350,
+        height=380,
         hovermode="x unified",
         title=dict(
-            text=f"Proyección a 7 Días - {serie_sel}", font=dict(size=14)
+            text=f"Proyección a 7 Días - {serie_sel}", font=dict(size=15)
         ),
-        margin=dict(l=10, r=10, t=30, b=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         xaxis=dict(showgrid=True, gridcolor="#E5E5E5"),
         yaxis=dict(showgrid=True, gridcolor="#E5E5E5"),
+        margin=dict(l=20, r=20, t=40, b=20),
     )
     st.plotly_chart(fig_proj, use_container_width=True)
 
@@ -426,8 +387,9 @@ st.markdown("---")
 st.subheader("📩 Contacto")
 
 with st.form("form_contacto"):
-    nombre = st.text_input("Nombre / Empresa")
-    email = st.text_input("Correo Electrónico")
+    col_f1, col_f2 = st.columns(2)
+    nombre = col_f1.text_input("Nombre / Empresa")
+    email = col_f2.text_input("Correo Electrónico")
     mensaje = st.text_area("Consulta o mensaje")
 
     submit = st.form_submit_button("Enviar Solicitud")
